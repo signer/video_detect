@@ -10,8 +10,9 @@
 #include <sys/msg.h>
 #include <sys/ipc.h>
 #include <semaphore.h>
-#include "inc/sys/DataType.h"
-#include "inc/sys/ds40xxsdk.h"
+
+#include <DataType.h>
+#include <ds40xxsdk.h>
 using namespace std;
 #define MSG_INTERVAL 5  // send msg every MSG_INTERVAL seconds
 #define IMG_WIDTH 704
@@ -19,11 +20,14 @@ using namespace std;
 #define IMG_BUF_SIZE 704*576*2
 
 #define RELEASE_FRAME(x) if (x) {cvReleaseImage(&x);x=NULL;}else{}
-/*
-#define HW_ChannelOpen(x,y) 0
+
+
+#ifdef WITHOUT_SDK // for test 
+#define ChannelOpen(x,y) 0
 #define GetOriginalImage(x,y,z) 0
-#define HW_ChannelClose(x) 0
-*/
+#define ChannelClose(x) 0
+#endif
+
 pthread_t g_thread_id;
 int g_running = 0;
 int g_queue_id = 0;
@@ -48,7 +52,7 @@ void video_idx::init(){
 
 const char *video_idx::str(){
 	static char buf[1024];
-	sprintf(buf, "idx={type:%d, time:%d(%s), freeze:%d, black:%d, mosaic:%d}", 
+	sprintf(buf, "idx={type:%ld, time:%ld(%s), freeze:%ld, black:%ld, mosaic:%ld}", 
 			type, time, time2str(time), freezing_cnt, black_cnt, mosaic_cnt);
 	return buf;
 }
@@ -68,6 +72,11 @@ int open_channel(const char * filename = NULL)
 		}
 		return g_capture ? 0 : -1;
 	}else{
+#ifdef WITHOUT_SDK
+		fprintf(stderr, "please set WITHOUT_SDK:=1 in Makefile");
+		exit(-1);
+#else
+
 		if (g_channel == -1){
 			if (InitDSPs() == 0){
 				LOG("init dsps failed");
@@ -80,6 +89,7 @@ int open_channel(const char * filename = NULL)
 			}
 		}
 		return (g_channel>=0) ? 0 : -1;
+#endif
 	}
 }
 
@@ -88,6 +98,10 @@ IplImage* query_frame()
 	if (g_capture){
 		return cvQueryFrame(g_capture);
 	}else{
+#ifdef WITHOUT_SDK
+		fprintf(stderr, "please set WITHOUT_SDK:=1 in Makefile");
+		exit(-1);
+#else
 		static IplImage *pIplImage = cvCreateImage(cvSize(IMG_WIDTH, IMG_HEIGHT),IPL_DEPTH_8U,1); 
 		static int n = 0;
 		unsigned char img_buf[IMG_BUF_SIZE];
@@ -99,6 +113,7 @@ IplImage* query_frame()
 		//SaveYUVToBmpFile(filename, img_buf, IMG_WIDTH, IMG_HEIGHT); 
 		memcpy(pIplImage->imageData, img_buf, IMG_WIDTH*IMG_HEIGHT);
 		return pIplImage;
+#endif
 	}
 }
 
@@ -109,9 +124,7 @@ void close_channel()
 		g_capture = NULL;
 	}else{
 		if (g_channel >= 0){
-			//HW_ChannelClose(g_channel);
 			g_channel = -1;
-			//DeInitDSPs();
 		}
 	}
 }
@@ -169,7 +182,7 @@ void* detect(void *para){
 
 		if (to_save){
 			char filename[1024];
-			sprintf(filename, "./images/frame%d.jpg", time2str(cur_time)); 
+			sprintf(filename, "./images/frame%s.jpg", time2str(cur_time)); 
 			//cvSaveImage(filename, pFrame);
 		}
 
@@ -189,6 +202,7 @@ void* detect(void *para){
 		prev_frame = cur_frame;
 		usleep(10);
 	}
+	return 0;
 }
 
 int video_start(int queue_id, int channel)
@@ -223,4 +237,5 @@ int video_end()
 	LOG("");
 	g_running = 0;
 	close_channel();
+	return 0;
 }

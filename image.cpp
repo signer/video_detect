@@ -66,7 +66,7 @@ bool is_freezing2(const IplImage *pImg1, const IplImage *pImg2)
 	}
 
 	// compare 2 images 
-	int method = CV_COMP_CHISQR;
+	//int method = CV_COMP_CHISQR;
 	double comp = 0;
 	comp = cvCompareHist(pHist1, pHist2, CV_COMP_CORREL);
 	cout << "comp = " << comp << endl;
@@ -96,7 +96,7 @@ bool is_pure(const IplImage *pImg)
 	CvScalar mean;
 	CvScalar std_dev;
 	cvAvgSdv(pImg, &mean, &std_dev);
-	int nmean = (int)mean.val[0];
+	//int nmean = (int)mean.val[0];
 	int nstd_dev = (int)std_dev.val[0];
 
 	return (nstd_dev < black_threshold);
@@ -156,8 +156,8 @@ struct MacroBlock
 bool is_mosaic(const IplImage *pGray)
 {
 	int edge_size_filtered = 0;
-	int avg_gray_filtered = 0;
-	int sdv_gray_filtered = 0;
+	//int avg_gray_filtered = 0;
+	//int sdv_gray_filtered = 0;
 
 	IplImage *pEdge = NULL;
 	
@@ -189,7 +189,7 @@ bool is_mosaic(const IplImage *pGray)
 
 
 	CvPoint p1, p2;
-	int LineWidth = 0;
+	//int LineWidth = 0;
 	for (int x = 0; x < w; x++)
 	{
 		for (int y = 0; y < h; y++)
