@@ -1,5 +1,0 @@
-#include "detect.h"
-
-int video_start(int a, int b){}
-int video_start2(int a, const char* b){}
-int video_end(){}
