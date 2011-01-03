@@ -7,6 +7,7 @@
 #include <time.h>
 #include <stdlib.h>
 #define LOG_FILE_NAME "video_detect.log"
+#define IMAGE_PATH    "./images"
 #define MAX_LINE_SIZE 10240
 
 #define VERBOSE 1
@@ -21,7 +22,7 @@ static inline char * time2str(time_t t)
 	tm = *localtime(&t);
 
 	static char buffer[32];
-	strftime(buffer, 32, "%Y-%m-%d_%H:%M:%S", &tm);
+	strftime(buffer, 32, "%Y%m%d_%H%M%S", &tm);
 	return buffer;
 }
 
@@ -56,9 +57,10 @@ static inline void __log(const char * file, const char* func, int line, const ch
 	__log(__FILE__, __FUNCTION__, __LINE__, fmt, ## __VA_ARGS__ ); \
 }while(0); 
 
-
 //#undef LOG
 //#define LOG(fmt, ...) do {} while(0);
 #define FLUSHLOG() do { if (g_flog) { fclose(g_flog); } } while(0);
+
+#define ALERT printf("%s %s() :%d\n", __FILE__, __FUNCTION__, __LINE__);
 
 #endif

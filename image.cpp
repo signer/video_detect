@@ -17,7 +17,7 @@ int T_edge    = 14;
 int T_avg_gray = 100;
 int T_sdv_gray = 10;
 int T_edge_size = 30;
-int T_mosaic_count = 3;
+int T_mosaic_count = 2;
 
 
 bool is_freezing(const IplImage *pImg1, const IplImage *pImg2)
@@ -121,11 +121,12 @@ struct MacroBlock
 	int edge_size;
 	bool edge[4];
 	bool mosaic; 
+	int magic(){
+		return edge[TOP]*0x1000 + edge[RIGHT]*0x0100 + edge[BOTTOM]*0x0010 + edge[LEFT];
+	}
 	int edgeType()
 	{
-		int magic = edge[TOP]*0x1000 + edge[RIGHT]*0x0100 + 
-			edge[BOTTOM]*0x0010 + edge[LEFT];
-		switch(magic)
+		switch(magic())
 		{
 			case 0x0000:
 				return 0;	    
@@ -145,7 +146,7 @@ struct MacroBlock
 				return 7;
 			default:
 				return 8;
-		}	    
+		}
 	}    
 
 };
@@ -163,10 +164,9 @@ bool is_mosaic(const IplImage *pGray)
 	
 	CvSize size = cvGetSize(pGray);
 
-	int channels = 1;
-
-	pEdge = cvCreateImage(size, IPL_DEPTH_8U, channels);
+	pEdge = cvCreateImage(size, IPL_DEPTH_8U, 1);
 	cvEqualizeHist(pGray, pEdge);
+	
 
 	/* edge detection */
 	int aperture_size = 3;
@@ -185,8 +185,7 @@ bool is_mosaic(const IplImage *pGray)
 
 
 	IplImage *pColor = cvCreateImage(size, IPL_DEPTH_8U, 3);
-	cvCvtColor(pEdge, pColor, CV_GRAY2BGR);
-
+	cvCvtColor(pGray, pColor, CV_GRAY2BGR);
 
 	CvPoint p1, p2;
 	//int LineWidth = 0;
@@ -298,7 +297,7 @@ bool is_mosaic(const IplImage *pGray)
 	}
 
 
-	//cvShowImage("mosaic", pColor);
+		
 	for (int i = 0; i < size.height; i++)
 	{
 		for (int j = 0; j < size.width; j++)
@@ -361,18 +360,37 @@ bool is_mosaic(const IplImage *pGray)
 		}
 	}
 
+	IplImage *pEdgePoints = cvCloneImage(pColor);
 	int mosaic_count = 0;
 	for (int i = 0; i < w; i++)
 	{
 		for (int j = 0; j < h; j++)
 		{	  
+			int top = j * BlockSize ;
+			int left = i * BlockSize ;
+			int bottom = j * BlockSize + BlockSize - 1;
+			int right = i * BlockSize + BlockSize - 1;
+			CvPoint pts[4];
+			pts[0].y = pts[1].y = top;
+			pts[1].x = pts[2].x = right;
+			pts[2].y = pts[3].y = bottom;
+			pts[3].x = pts[0].x = left;
+
 			if (macros[i][j].mosaic)
 			{
 				mosaic_count ++;
+				cvCircle(pColor, cvPoint(left+BlockSize/2, top+BlockSize/2), BlockSize/2, CV_RGB(0,255,0));
+			}
+
+			if (macros[i][j].magic()){
+				int green_level = 256 - macros[i][j].edge_size * 4;
+				cvFillConvexPoly(pEdgePoints, pts, 4, CV_RGB(0, green_level, 0));
 			}
 		}
 	}
 
+	cvShowImage("mosaic", pColor);
+	cvShowImage("edge" , pEdgePoints);
 
 	for (int i = 0; i < w; i++)
 	{
@@ -381,11 +399,27 @@ bool is_mosaic(const IplImage *pGray)
 	delete[] macros;
 	macros = NULL;
 
+	
+	if (mosaic_count){
+		LOG("mosaic_count = %d", mosaic_count);
+		save_image(pColor, "mosaic");
+	}
+	
+
 	/* release images */
 	cvReleaseImage(&pEdge);
 	cvReleaseImage(&pColor);
-	if (mosaic_count)
-		cout << "mosaic_count = " << mosaic_count << endl;
+	cvReleaseImage(&pEdgePoints);
 
 	return (mosaic_count >= T_mosaic_count);
+}
+
+
+void save_image(const IplImage *image, const char* prefix = ""){
+	if (image == NULL)
+		return ;
+
+	char path[1024];
+	sprintf(path, IMAGE_PATH "/%s_%s.jpg", prefix, time2str(time(NULL)));
+	cvSaveImage(path, image);
 }

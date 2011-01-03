@@ -9,5 +9,6 @@ bool is_freezing(const IplImage *last, const IplImage *cur);
 
 bool is_mosaic(const IplImage *image);
 
+void save_image(const IplImage *image, const char* prefix);
 
 #endif

@@ -2,6 +2,8 @@
 #include "image.h"
 #include "log.h"
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <iostream>
 #include <cv.h>
 #include <cxcore.h>
@@ -95,14 +97,21 @@ int open_channel(const char * filename = NULL)
 
 IplImage* query_frame()
 {
+	static IplImage *pIplImage = NULL; 
 	if (g_capture){
-		return cvQueryFrame(g_capture);
+		IplImage *pFrame = cvQueryFrame(g_capture);	
+		if (pFrame == NULL)
+			return NULL;
+		if (!pIplImage)
+			pIplImage = cvCreateImage(cvSize(pFrame->width, pFrame->height),IPL_DEPTH_8U,1); 
+		cvCvtColor(pFrame, pIplImage, CV_BGR2GRAY);
 	}else{
 #ifdef WITHOUT_SDK
 		fprintf(stderr, "please set WITHOUT_SDK:=1 in Makefile");
 		exit(-1);
 #else
-		static IplImage *pIplImage = cvCreateImage(cvSize(IMG_WIDTH, IMG_HEIGHT),IPL_DEPTH_8U,1); 
+		if (!pIplImage)
+			pIplImage = cvCreateImage(cvSize(IMG_WIDTH, IMG_HEIGHT),IPL_DEPTH_8U,1); 
 		static int n = 0;
 		unsigned char img_buf[IMG_BUF_SIZE];
 		int size = IMG_BUF_SIZE;
@@ -112,9 +121,9 @@ IplImage* query_frame()
 		//sprintf(filename, "./images/frame%d.bmp", n++);
 		//SaveYUVToBmpFile(filename, img_buf, IMG_WIDTH, IMG_HEIGHT); 
 		memcpy(pIplImage->imageData, img_buf, IMG_WIDTH*IMG_HEIGHT);
-		return pIplImage;
 #endif
 	}
+	return pIplImage;
 }
 
 void close_channel()
@@ -143,7 +152,9 @@ void* detect(void *para){
 	time_t last_time = time(NULL);
 	while (g_running){
 		int to_save = 0;
+		
 		IplImage *pFrame = query_frame();
+		
 		if (pFrame == NULL){
 			LOG("query frame failed, reach eof?");
 			sleep(5);
@@ -154,22 +165,26 @@ void* detect(void *para){
 		cout << "Frame " << ++nFrmNum << endl;
 		cur_frame = cvCloneImage(pFrame);
 
-		//cvShowImage("video", cur_frame);
-		if (cvWaitKey(100) > 0){
-			continue;
+		cvShowImage("video", cur_frame);
+		if (cvWaitKey(1000000) > 0){
+			//continue;
 		}
+
 		// freezing
 		if (prev_frame && is_freezing(prev_frame, cur_frame)){
 			LOG("freezing @ Frame %d", nFrmNum);
 			idx.freezing_cnt++;
 			to_save = 1;
 		}
+		
+		
 		// black
 		if (is_black(cur_frame)){
 			LOG("black @ Frame %d", nFrmNum);
 			idx.black_cnt++;
 			to_save = 1;
 		}
+		
 
 		// mosaic
 		if (is_mosaic(cur_frame)){
@@ -181,9 +196,9 @@ void* detect(void *para){
 		time_t cur_time = time(NULL);
 
 		if (to_save){
-			char filename[1024];
-			sprintf(filename, "./images/frame%s.jpg", time2str(cur_time)); 
-			//cvSaveImage(filename, pFrame);
+			
+			save_image(pFrame, "frame");
+			
 		}
 
 		// send msg every 5 seconds
@@ -198,7 +213,9 @@ void* detect(void *para){
 			idx.mosaic_cnt = 0;
 		}
 
+		
 		RELEASE_FRAME(prev_frame);
+		
 		prev_frame = cur_frame;
 		usleep(10);
 	}
@@ -219,6 +236,9 @@ int video_start(int queue_id, int channel)
 
 int video_start2(int queue_id, const char* filename)
 {
+	if (-1 == access(IMAGE_PATH, F_OK)){
+		mkdir(IMAGE_PATH, S_IRWXU);
+	}
 	LOG("queue_id=%d", queue_id);
 	g_queue_id = queue_id;
 	if (!g_running)

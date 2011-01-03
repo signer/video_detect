@@ -1,5 +1,5 @@
-LIBS:=-lcv -lcxcore -lml -lhighgui -lcvaux -lpthread 
-CFLAGS:=-O2 -Wall -I./inc/opencv -I./inc/sys 
+LIBS:=-lcv -lcxcore -lhighgui -lcvaux -lpthread 
+CFLAGS:= -g -Wall -I./inc/sys -I/usr/include/opencv
 CC:=g++
 
 WITHOUT_SDK:=1
@@ -7,7 +7,7 @@ WITHOUT_SDK:=1
 ifeq ($(WITHOUT_SDK),1)
 CFLAGS += -DWITHOUT_SDK
 else
-CFLAGS += -lds40xxsdk
+CFLAGS += -lds40xxsdk -O2
 endif
 
 all : libdetect.so demo add_error msgserver 
