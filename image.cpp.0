@@ -1,0 +1,309 @@
+#include "image.h"
+#include "log.h"
+#include <cv.h>
+#include <highgui.h>
+#include <cxcore.h>
+#include <iostream>
+using namespace std;
+
+
+
+/** ¿¿¿¿¿¿¿¿¿¿¿ **/
+struct config {
+	/** ¿¿¿¿¿¿¿ 
+	 *  ¿¿¿ 3
+	 **/
+	int freese_th;
+
+	/** ¿¿¿¿¿¿¿
+	 *  ¿¿¿ 30
+	 **/
+	int black_th;
+
+	/** 
+	 * ¿¿¿¿¿¿3¿¿¿
+	 */
+	 /* ¿¿¿¿¿¿¿¿"¿¿"¿¿¿
+	  * ¿¿¿¿¿¿¿¿¿>¿¿¿,¿¿"¿¿"
+	  * ¿¿¿ 8, 
+	  * ¿¿ 5-10¿
+	  */
+	int mosaic_point_th;
+	 /* ¿¿¿¿¿"¿¿¿"¿¿¿
+	  * ¿¿¿¿¿¿¿¿¿>¿¿,¿¿"¿¿¿"
+	  * ¿¿¿ 2, 
+	  * ¿¿ 2¿3 ¿
+	  */
+	int mosaic_line_th;
+	/** ¿¿¿¿¿¿¿¿¿¿¿¿
+	 *  ¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿¿
+	 *  ¿¿¿ 5
+	 *  ¿¿ 4-10¿
+	 */
+	int mosaic_count_th;  	
+	config();
+
+	void init(int freese_th, int black_th, 
+			 int mosaic_point_th, int mosaic_line_th, int mosaic_count_th);
+};
+
+config::config(){
+	init(3, 30, 5, 8, 2);
+}
+
+void config::init(int freese_th = 3, int black_th = 30, 
+		 int mosaic_point_th = 8, int mosaic_line_th = 2, int mosaic_count_th = 5)
+{
+	this->freese_th = freese_th;
+	this->black_th = black_th;
+	this->mosaic_count_th = mosaic_count_th;
+	this->mosaic_point_th = mosaic_point_th;
+	this->mosaic_line_th = mosaic_line_th;
+}
+
+struct config g_config;
+
+
+
+/*************************************************************************************
+ *                               Freezing Detection 
+ *************************************************************************************/
+bool is_freezing(const IplImage *pImg1, const IplImage *pImg2)
+{
+	IplImage * pImgTmp = NULL;
+
+	pImgTmp = cvCloneImage(pImg1);
+	//cvSub(pImg1, pImg2, pImgTmp);
+	cvAbsDiff(pImg1, pImg2, pImgTmp);
+
+	CvScalar avg, sdv;
+	cvAvgSdv(pImgTmp, &avg, &sdv);	
+	cvReleaseImage(&pImgTmp);
+	return ((avg.val[0]+sdv.val[0]) < (g_config.freese_th));
+}
+
+bool is_freezing2(const IplImage *pImg1, const IplImage *pImg2)
+{
+	bool bEqual = false;
+
+	CvHistogram *pHist1 = NULL;
+	CvHistogram *pHist2 = NULL;
+
+	// Initialize Histograms
+	int dims = 1;// dims of histogram
+	int sizes[1] = {255};
+	int type = CV_HIST_ARRAY;
+	float ** ranges = NULL;
+	int uniform = 1;
+	pHist1 = cvCreateHist(dims, sizes, type, ranges, uniform);
+	pHist2 = cvCreateHist(dims, sizes, type, ranges, uniform);    
+
+	double factor = 10000;
+
+	/// calc color histograms 
+	IplImage *planes[1] = {const_cast<IplImage*>(pImg1)};
+	cvCalcHist(planes, pHist1);
+	planes[0] = const_cast<IplImage*>(pImg2);
+	cvCalcHist(planes, pHist2);
+	bool bNormalize = true;
+
+	if (bNormalize)
+	{
+		cvNormalizeHist(pHist1, factor);
+		cvNormalizeHist(pHist2, factor);
+	}
+
+	// compare 2 images 
+	//int method = CV_COMP_CHISQR;
+	double comp = 0;
+	comp = cvCompareHist(pHist1, pHist2, CV_COMP_CORREL);
+	cout << "comp = " << comp << endl;
+	if (comp < g_config.freese_th)
+	{
+		bEqual = true;
+	}
+
+	cvReleaseHist(&pHist1);
+	cvReleaseHist(&pHist2);
+	return bEqual;
+}
+
+
+
+/*************************************************************************************
+ *                               Black Image Detection 
+ *************************************************************************************/
+
+bool is_black(const IplImage *pImg)
+{
+	CvScalar mean;
+	CvScalar std_dev;
+	cvAvgSdv(pImg, &mean, &std_dev);
+	int nmean = (int)mean.val[0];
+	int nstd_dev = (int)std_dev.val[0];
+
+	return (nmean < 5 && nstd_dev < g_config.black_th);
+}
+
+bool is_pure(const IplImage *pImg)
+{
+	CvScalar mean;
+	CvScalar std_dev;
+	cvAvgSdv(pImg, &mean, &std_dev);
+	//int nmean = (int)mean.val[0];
+	int nstd_dev = (int)std_dev.val[0];
+
+	return (nstd_dev < g_config.black_th);
+}
+
+
+
+
+/*************************************************************************************
+ *                               Mosaic Image Detection 
+ *************************************************************************************/
+#define BLOCK_SIZE 16
+#define TOP   0
+#define RIGHT 1
+#define BOTTOM 2
+#define LEFT 3
+
+/** ¿¿¿¿¿¿ **/
+/** ¿¿¿¿¿¿4¿¿¿2¿¿¿ **/
+struct macroblock {
+	double val[4];
+	double operator[](int i) const {
+		return val[i];
+	}
+
+	double & operator[](int i){
+		return val[i];
+	}
+};
+
+bool is_mosaic(const IplImage *pImage)
+{
+	if (pImage == NULL)
+		return false;
+
+	int width  = pImage->width;   // ¿¿¿
+	int height = pImage->height;  // ¿¿¿
+	int w16    = width/16;        // x-¿¿¿¿¿¿
+	int h16    = height/16;       //  y-¿¿¿¿¿¿
+
+	struct macroblock * mb = new macroblock[w16*h16];  // ¿¿w16*h16¿¿¿
+	// ¿¿¿¿¿x-¿¿¿y-¿¿¿(1¿, 2¿)
+	// fx'(x,y) = abs(f(x+1, y) - f(x, y))
+	// fx"(x,y) = min{fx'(x,y)-f'(x-1,y), fx'(x,y)-f'(x+1,y)}
+	//          = min{abs(f(x+1,y) - f(x,y)) - abs(f(x,y) - f(x-1,y)),
+	//                abs(f(x+1,y) - f(x,y)) - abs(f(x+2,y) - f(x+1,y))}
+	//              
+	// fy'(x,y) = abs(f(x, y+1) - f(x, y))
+	// fy"(x,y) = min(fy'(x, y)-fy'(x, y-1), fy'(x,y)-fy'(x,y-1)
+	//          = min{abs(f(x,y+1) - f(x,y)) - abs(f(x,y) - f(x,y-1)),
+	//                abs(f(x,y+1) - f(x,y)) - abs(f(x,y+2) - f(x,y+1))}
+	for (int i = 0; i < h16; i++){
+		for (int j = 0; j < w16; j++){
+			// ¿h16*w16, ¿¿¿¿¿¿,¿¿¿¿¿¿¿¿¿2¿¿¿,
+			// ¿¿,¿¿¿¿¿top¿¿¿¿¿¿¿¿¿¿bottom¿,
+			//    ¿left¿¿¿¿¿¿¿¿¿right¿
+			// ¿¿¿¿¿¿¿¿¿¿¿¿¿¿
+
+			int top = i ? (i*16-1) : 0;
+			int left = j ? (j*16-1) : 0;
+					
+			// fy'(x,y) = abs(f(x, y+1) - f(x, y))
+			// fy"(x,y) = min(fy'(x, y)-fy'(x, y-1), fy'(x,y)-fy'(x,y-1)
+			//          = min{abs(f(x,y+1) - f(x,y)) - abs(f(x,y) - f(x,y-1)),
+			//                abs(f(x,y+1) - f(x,y)) - abs(f(x,y+2) - f(x,y+1))}
+			double ddy = 0;
+			for (int k = 0; i > 0 && k < 16; k++){
+				// ¿¿¿¿¿¿16¿¿¿¿¿
+				double y[4];
+				y[0] = cvGetReal2D(pImage, top-1, left+k);	
+				y[1] = cvGetReal2D(pImage, top, left+k);
+				y[2] = cvGetReal2D(pImage, top+1, left+k);
+				y[3] = cvGetReal2D(pImage, top+2, left+k);
+				
+				// ¿¿y¿¿
+				double dy[3];
+				dy[0] = abs(y[1] - y[0]);
+				dy[1] = abs(y[2] - y[1]);  
+				dy[2] = abs(y[3] - y[2]);
+				
+				// ¿¿y¿¿
+				ddy += min(dy[1] - dy[0], dy[1] - dy[2]);
+			}
+			ddy /= 16; // ¿¿¿¿¿¿¿¿¿¿¿¿
+			mb[i*w16+j][TOP] = ddy; 
+			if (i > 0){ 
+				mb[(i-1)*w16+j][BOTTOM] = ddy;
+			}
+
+			// fx'(x,y) = abs(f(x+1, y) - f(x, y))
+			// fx"(x,y) = min{fx'(x,y)-f'(x-1,y), fx'(x,y)-f'(x+1,y)}
+			//          = min{abs(f(x+1,y) - f(x,y)) - abs(f(x,y) - f(x-1,y)),
+			//                abs(f(x+1,y) - f(x,y)) - abs(f(x+2,y) - f(x+1,y))}
+			double ddx = 0;
+			for (int k = 0; j > 0 && k < 16; k++){
+				// ¿¿¿¿¿¿16¿¿¿¿¿
+				double x[4];
+				x[0] = cvGetReal2D(pImage, top+k, left-1);	
+				x[1] = cvGetReal2D(pImage, top+k, left);
+				x[2] = cvGetReal2D(pImage, top+k, left+1);
+				x[3] = cvGetReal2D(pImage, top+k, left+2);
+
+				// ¿¿x¿¿
+				double dx[3];
+				dx[0] = abs(x[1] - x[0]);
+				dx[1] = abs(x[2] - x[1]);
+				dx[2] = abs(x[3] - x[2]);
+				
+				// ¿¿x¿¿
+				ddx += min(dx[1] - dx[0], dx[1] - dx[2]);
+			}
+
+			ddx /= 16; // ¿¿¿¿¿¿¿¿¿¿¿¿
+			mb[i*w16+j][LEFT] = ddx;
+			if (j > 0){
+				mb[i*w16+j-1][RIGHT] = ddx;
+			}
+		}
+	}
+	
+	int mosaic_num = 0;
+	for (int i = 0; i < h16; i++){
+		for (int j = 0; j < w16; j++){
+			// ¿¿¿¿¿¿
+			// ¿¿¿¿¿¿¿¿¿¿¿¿>mosaic_point_th
+			// ¿¿¿¿¿"¿¿"
+			int n_edges = 0;
+			for (int k = 0; k < 4; k++){
+				if (mb[i*w16+j][k] >= g_config.mosaic_point_th){
+					n_edges ++;
+				}
+			}	
+
+			// ¿¿¿¿¿"¿¿"¿¿>mosaic_line_th
+			// ¿¿¿¿¿¿"¿¿¿" 
+			if (n_edges >= g_config.mosaic_line_th){
+				mosaic_num ++;
+			}
+		}
+	}
+
+	delete[] mb;
+
+	// ¿¿"¿¿¿"¿¿¿¿¿>mosaic_count_th, ¿¿¿¿¿¿¿¿¿¿¿
+	return (mosaic_num > g_config.mosaic_count_th);
+}
+
+
+void save_image(const IplImage *image, const char* prefix = ""){
+	if (image == NULL)
+		return ;
+
+	char path[1024];
+	sprintf(path, IMAGE_PATH "/%s_%s.jpg", prefix, time2str(time(NULL)));
+	cvSaveImage(path, image);
+}
