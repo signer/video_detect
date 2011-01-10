@@ -20,6 +20,8 @@ msgserver: msgserver.c
 add_error: add_error.cpp
 	$(CC) $^ -o $@
 install:
-	cp ./libdetect.so /usr/lib
+	sudo cp ./libdetect.so /usr/lib
 clean:
 	rm -r *.o *.so ./demo ./add_error ./msgserver
+run : libdetect.so install 
+	./demo 1 ../video/1.avi

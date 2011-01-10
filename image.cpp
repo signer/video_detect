@@ -6,20 +6,78 @@
 #include <iostream>
 using namespace std;
 
-/* Parameter for Freese Image Detection */
-double freese_threshold = 3;
-/* Parameter for Black Image Detection */
-int black_threshold = 30;
-/* Parameters For Mosaic Detection */
-int BlockSize = 16;
-int canny_threshold = 150;
-int T_edge    = 14;
-int T_avg_gray = 100;
-int T_sdv_gray = 10;
-int T_edge_size = 30;
-int T_mosaic_count = 2;
 
 
+/** 配置几种检测算法的阀值 **/
+struct config {
+	/** 静帧检测的阀值 
+	 *  默认值 3
+	 **/
+	int freese_th;
+
+	/** 黑屏检测的阀值
+	 *  默认值 30
+	 **/
+	int black_th;
+
+	/** 
+	 * 马赛克检测的3个阀值
+	 */
+	 /* 判断宏块边的是否"实边"的阀值
+	  * 当宏块边的二阶梯度>该值时,它是"实边"
+	  * 默认值 8, 
+	  * 建议 5-10吧
+	  */
+	int mosaic_point_th;
+	 /* 判断宏块是"马赛克"的阀值
+	  * 如果宏块的实边个数>该值,它是"马赛克"
+	  * 默认值 2, 
+	  * 建议 2或3 吧
+	  */
+	int mosaic_line_th;
+	/** 判断是否马赛克图像的阀值
+	 *  图像中马赛克的个数大于该阀值即为马赛克图像
+	 *  默认值 5
+	 *  建议 4-10吧
+	 */
+	int mosaic_count_th;  	
+
+	/** 马赛克图像处理时是否影响邻居宏块
+	 * 如果mosaic_line_th<4时,如果本参数为1,
+	 * 将已经判断为马赛克的宏块的非实边全部置为实边
+	 * 同时重新处理邻居宏块
+	 * 默认值 1
+	 */
+	int mosaic_adjacent_effect;
+	config();
+
+	void init(int freese_th, int black_th, 
+			 int mosaic_point_th, int mosaic_line_th, int mosaic_count_th,
+			 int mosaic_adjacent_effect);
+};
+
+config::config(){
+	init(3, 30, 8, 3, 5, 1);
+}
+
+void config::init(int freese_th = 3, int black_th = 30, 
+		 int mosaic_point_th = 8, int mosaic_line_th = 3, int mosaic_count_th = 5, 
+		 int mosaic_adjacent_effect = 1)
+{
+	this->freese_th = freese_th;
+	this->black_th = black_th;
+	this->mosaic_count_th = mosaic_count_th;
+	this->mosaic_point_th = mosaic_point_th;
+	this->mosaic_line_th = mosaic_line_th;
+}
+
+struct config g_config;
+
+
+
+/*************************************************************************************
+ *                               Freezing Detection 
+ *************************************************************************************/
 bool is_freezing(const IplImage *pImg1, const IplImage *pImg2)
 {
 	IplImage * pImgTmp = NULL;
@@ -31,7 +89,7 @@ bool is_freezing(const IplImage *pImg1, const IplImage *pImg2)
 	CvScalar avg, sdv;
 	cvAvgSdv(pImgTmp, &avg, &sdv);	
 	cvReleaseImage(&pImgTmp);
-	return ((avg.val[0]+sdv.val[0]) < (freese_threshold));
+	return ((avg.val[0]+sdv.val[0]) < (g_config.freese_th));
 }
 
 bool is_freezing2(const IplImage *pImg1, const IplImage *pImg2)
@@ -70,7 +128,7 @@ bool is_freezing2(const IplImage *pImg1, const IplImage *pImg2)
 	double comp = 0;
 	comp = cvCompareHist(pHist1, pHist2, CV_COMP_CORREL);
 	cout << "comp = " << comp << endl;
-	if (comp < freese_threshold)
+	if (comp < g_config.freese_th)
 	{
 		bEqual = true;
 	}
@@ -80,6 +138,12 @@ bool is_freezing2(const IplImage *pImg1, const IplImage *pImg2)
 	return bEqual;
 }
 
+
+
+/*************************************************************************************
+ *                               Black Image Detection 
+ *************************************************************************************/
+
 bool is_black(const IplImage *pImg)
 {
 	CvScalar mean;
@@ -88,7 +152,7 @@ bool is_black(const IplImage *pImg)
 	int nmean = (int)mean.val[0];
 	int nstd_dev = (int)std_dev.val[0];
 
-	return (nmean < 5 && nstd_dev < black_threshold);
+	return (nmean < 5 && nstd_dev < g_config.black_th);
 }
 
 bool is_pure(const IplImage *pImg)
@@ -99,319 +163,208 @@ bool is_pure(const IplImage *pImg)
 	//int nmean = (int)mean.val[0];
 	int nstd_dev = (int)std_dev.val[0];
 
-	return (nstd_dev < black_threshold);
+	return (nstd_dev < g_config.black_th);
 }
 
 
 
-enum EnumDirection
-{
-	TOP = 0,
-	RIGHT = 1,
-	BOTTOM = 2,
-	LEFT = 3    
+
+/*************************************************************************************
+ *                               Mosaic Image Detection 
+ *************************************************************************************/
+#define BLOCK_SIZE 16
+#define TOP   0
+#define RIGHT 1
+#define BOTTOM 2
+#define LEFT 3
+
+/** 宏块数据保存 **/
+/** 当前保存的是4条边的2阶梯度 **/
+struct macroblock {
+	int val[4];
+	int bMosaic;
 };
 
-
-
-struct MacroBlock
+bool is_mosaic(const IplImage *pImage)
 {
-	int avg_gray;
-	int sdv_gray;
-	int edge_size;
-	bool edge[4];
-	bool mosaic; 
-	int magic(){
-		return edge[TOP]*0x1000 + edge[RIGHT]*0x0100 + edge[BOTTOM]*0x0010 + edge[LEFT];
-	}
-	int edgeType()
-	{
-		switch(magic())
-		{
-			case 0x0000:
-				return 0;	    
-			case 0x1000:
-				return 1;
-			case 0x0010:
-				return 2;
-			case 0x1010:
-				return 3;
-			case 0x1011:
-				return 4;
-			case 0x1110:
-				return 5;
-			case 0x1111:
-				return 6;
-			case 0x1001:
-				return 7;
-			default:
-				return 8;
-		}
-	}    
+	if (pImage == NULL)
+		return false;
 
-};
+	int width  = pImage->width;   // 图像宽
+	int height = pImage->height;  // 图像高
+	int w16    = width/16;        // x-轴上宏块个数
+	int h16    = height/16;       //  y-轴上宏块个数
 
+	struct macroblock * mb = new macroblock[w16*h16];  // 全部w16*h16个宏块
+	memset(mb, 0, sizeof(macroblock)*w16*h16);
+	// 计算图像的x-梯度和y-梯度值(1阶, 2阶)
+	// fx'(x,y) = abs(f(x+1, y) - f(x, y))
+	// fx"(x,y) = min{fx'(x,y)-f'(x-1,y), fx'(x,y)-f'(x+1,y)}
+	//          = min{abs(f(x+1,y) - f(x,y)) - abs(f(x,y) - f(x-1,y)),
+	//                abs(f(x+1,y) - f(x,y)) - abs(f(x+2,y) - f(x+1,y))}
+	//              
+	// fy'(x,y) = abs(f(x, y+1) - f(x, y))
+	// fy"(x,y) = min(fy'(x, y)-fy'(x, y-1), fy'(x,y)-fy'(x,y-1)
+	//          = min{abs(f(x,y+1) - f(x,y)) - abs(f(x,y) - f(x,y-1)),
+	//                abs(f(x,y+1) - f(x,y)) - abs(f(x,y+2) - f(x,y+1))}
+	for (int i = 0; i < h16; i++){
+		for (int j = 0; j < w16; j++){
+			// 从h16*w16, 遍历每个宏块,计算其顶边和左边的2阶梯度,
+			// 注意,每个宏块的top边也是顶上一个宏块的bottom边,
+			//    其left边是它左边的宏块的right边
+			// 因此每个宏块只需要计算２条边
 
-
-
-bool is_mosaic(const IplImage *pGray)
-{
-	int edge_size_filtered = 0;
-	//int avg_gray_filtered = 0;
-	//int sdv_gray_filtered = 0;
-
-	IplImage *pEdge = NULL;
-	
-	CvSize size = cvGetSize(pGray);
-
-	pEdge = cvCreateImage(size, IPL_DEPTH_8U, 1);
-	cvEqualizeHist(pGray, pEdge);
-	
-
-	/* edge detection */
-	int aperture_size = 3;
-	cvCanny(pEdge, pEdge, canny_threshold, canny_threshold * 0.4, aperture_size);   
-
-	/* mosaic detection */
-	int h = size.height / BlockSize;
-	int w = size.width / BlockSize;
-	struct MacroBlock **macros = NULL; 
-
-	macros = new MacroBlock *[w];
-	for (int i = 0; i < w; i++)
-	{
-		macros[i] = new MacroBlock[h];
-	}
-
-
-	IplImage *pColor = cvCreateImage(size, IPL_DEPTH_8U, 3);
-	cvCvtColor(pGray, pColor, CV_GRAY2BGR);
-
-	CvPoint p1, p2;
-	//int LineWidth = 0;
-	for (int x = 0; x < w; x++)
-	{
-		for (int y = 0; y < h; y++)
-		{
-			// ��(x, y)�����
-			int top = y * BlockSize ;
-			int left = x * BlockSize ;
-			int bottom = y * BlockSize + BlockSize - 1;
-			int right = x * BlockSize + BlockSize - 1;
-
-			int count;
-			// top
-			count = 0;
-			for (int i = left; i < right; i++)
-			{
-				int data = 0;
-				data += (top == 0) ? 0 : (bool)cvGetReal2D(pEdge, top-1, i); 
-				data += (bool)cvGetReal2D(pEdge, top, i);
-				data += (bool)cvGetReal2D(pEdge, top+1, i);
-				//data += (bool)cvGetReal2D(pEdge, top+2, i);
-				if (data)
-					count++;
+			int top = i ? (i*16-1) : 0;
+			int left = j ? (j*16-1) : 0;
+					
+			// fy'(x,y) = abs(f(x, y+1) - f(x, y))
+			// fy"(x,y) = min(fy'(x, y)-fy'(x, y-1), fy'(x,y)-fy'(x,y-1)
+			//          = min{abs(f(x,y+1) - f(x,y)) - abs(f(x,y) - f(x,y-1)),
+			//                abs(f(x,y+1) - f(x,y)) - abs(f(x,y+2) - f(x,y+1))}
+			int ddy;
+			for (int k = 0; i > 0 && k < 16; k++){
+				// 按一条宏块边16个象素计算
+				int y[4];
+				y[0] = cvGetReal2D(pImage, top-1, left+k);	
+				y[1] = cvGetReal2D(pImage, top, left+k);
+				y[2] = cvGetReal2D(pImage, top+1, left+k);
+				y[3] = cvGetReal2D(pImage, top+2, left+k);
+				
+				// 一阶y梯度
+				int dy[3];
+				dy[0] = abs(y[1] - y[0]);
+				dy[1] = abs(y[2] - y[1]);  
+				dy[2] = abs(y[3] - y[2]);
+				
+				// 二阶y梯度
+				int tmp = min(dy[1] - dy[0], dy[1] - dy[2]);
+				ddy += tmp;
 			}
-			macros[x][y].edge[TOP] = (count >= T_edge);
+			ddy = (ddy/16); // 边上平均每个点的二阶梯度
 
-			// right
-			count = 0;
-			for (int i = top; i < bottom; i++)
-			{
-				int data = 0;
-				data += (bool)cvGetReal2D(pEdge, i, right-1); 
-				data += (bool)cvGetReal2D(pEdge, i, right);
-				data += (right+1 >= size.width) ? 0 : (bool)cvGetReal2D(pEdge, i, right+1);
-				//data += (right+2 >= size.width) ? 0 : (bool)cvGetReal2D(pEdge, i, right+2);
-				if (data)
-					count++;
-			}
-			macros[x][y].edge[RIGHT] = (count >= T_edge);
-
-			// bottom
-			count = 0;
-			for (int i = left; i < right; i++)
-			{
-				int data = 0;
-				data += (bool)cvGetReal2D(pEdge, bottom-1, i); 
-				data += (bool)cvGetReal2D(pEdge, bottom, i);
-				data += (bottom+1 >= size.height) ? 0 : (bool)cvGetReal2D(pEdge, bottom+1, i);
-				//data += (bottom+2 >= size.height) ? 0 : (bool)cvGetReal2D(pEdge, bottom+2, i);
-				if (data)
-					count++;
-			}	    
-			macros[x][y].edge[BOTTOM] = (count >= T_edge);
-
-			// left
-			count = 0;
-			for (int i = top; i < bottom; i++)
-			{
-				int data = 0;
-				data += (left == 0) ? 0 : (bool)cvGetReal2D(pEdge, i, left-1); 
-				data += (bool)cvGetReal2D(pEdge, i, left);
-				data += (bool)cvGetReal2D(pEdge, i, left+1);
-				data += (bool)cvGetReal2D(pEdge, i, left+2);
-				if (data)
-					count++;
-			}
-			macros[x][y].edge[LEFT] = (count >= T_edge);
-
-
-			if (macros[x][y].edge[TOP])
-			{
-				p1 = cvPoint(left, top);
-				p2 = cvPoint(right, top);
-				cvLine(pColor, p1, p2, CV_RGB(255, 0, 0), 1, CV_AA, 0);
-			}
-			if (macros[x][y].edge[RIGHT])
-			{
-				p1 = cvPoint(right, top);
-				p2 = cvPoint(right, bottom);
-				cvLine(pColor, p1, p2, CV_RGB(255, 0, 0), 1, CV_AA, 0);
-			}
-			if (macros[x][y].edge[BOTTOM])
-			{
-				p1 = cvPoint(left, bottom);
-				p2 = cvPoint(right, bottom);
-				cvLine(pColor, p1, p2, CV_RGB(255, 0, 0), 1, CV_AA, 0);
-			}
-			if (macros[x][y].edge[LEFT])
-			{
-				p1 = cvPoint(left, top);
-				p2 = cvPoint(left, bottom);
-				cvLine(pColor, p1, p2, CV_RGB(255, 0, 0), 1, CV_AA, 0);
+			mb[i*w16+j].val[TOP] = ddy; 
+			if (i > 0){ 
+				mb[(i-1)*w16+j].val[BOTTOM] = ddy;
 			}
 
-			// ����ƽ���Ҷ�ֵ Y_average
-			CvMat submat;
-			cvGetSubRect(pGray, &submat, cvRect(left, top, BlockSize, BlockSize));
-			CvScalar mean, sdv;
-			cvAvgSdv(&submat, &mean, &sdv);
-			macros[x][y].avg_gray = (int)mean.val[0];
-			macros[x][y].sdv_gray = (int)sdv.val[0];
+			// fx'(x,y) = abs(f(x+1, y) - f(x, y))
+			// fx"(x,y) = min{fx'(x,y)-f'(x-1,y), fx'(x,y)-f'(x+1,y)}
+			//          = min{abs(f(x+1,y) - f(x,y)) - abs(f(x,y) - f(x-1,y)),
+			//                abs(f(x+1,y) - f(x,y)) - abs(f(x+2,y) - f(x+1,y))}
+			int ddx = 0;
+			for (int k = 0; j > 0 && k < 16; k++){
+				// 按一条宏块边16个象素计算
+				int x[4];
+				x[0] = cvGetReal2D(pImage, top+k, left-1);	
+				x[1] = cvGetReal2D(pImage, top+k, left);
+				x[2] = cvGetReal2D(pImage, top+k, left+1);
+				x[3] = cvGetReal2D(pImage, top+k, left+2);
 
-			// �������ڵı�Ե�����
-			cvGetSubRect(pEdge, &submat, cvRect(left, top, BlockSize, BlockSize));	    
-			macros[x][y].edge_size = cvCountNonZero(&submat);
-		} 
-	}
+				// 一阶x梯度
+				int dx[3];
+				dx[0] = abs(x[1] - x[0]);
+				dx[1] = abs(x[2] - x[1]);
+				dx[2] = abs(x[3] - x[2]);
+				
+				// 二阶x梯度
+				int tmp = min(dx[1] - dx[0], dx[1] - dx[2]);
+				ddx += tmp;
+			}
 
-
-		
-	for (int i = 0; i < size.height; i++)
-	{
-		for (int j = 0; j < size.width; j++)
-		{
-
-			if (i % BlockSize == 0 ||
-					j % BlockSize == 0)
-				cvSetReal2D(pEdge, i, j, 200);
+			ddx = (ddx/16); // 边上平均每个点的二阶梯度
+			mb[i*w16+j].val[LEFT] = ddx;
+			if (j > 0){
+				mb[i*w16+j-1].val[RIGHT] = ddx;
+			}
 		}
 	}
 
+#ifdef WITHOUT_SDK
+	IplImage *pMosaic = cvCreateImage(cvSize(width, height), 8, 3);
+	IplImage *p2D = cvCreateImage(cvSize(width, height), 8, 3);
+	cvCvtColor(pImage, pMosaic, CV_GRAY2BGR);
+#endif
 
-	for (int i = 0; i < w; i++)
-	{
-		for (int j = 0; j < h; j++)
-		{
-			MacroBlock & mb = macros[i][j];
-			int edgeType = mb.edgeType();
-
-			if (edgeType > 2 && edgeType < 7)
-			{
-				mb.mosaic = true;
-			}
-			else if (edgeType == 7)
-			{		
-				for (int k = 1; k <= 3; k++)
-				{
-					MacroBlock & tmpMb = macros[i][j+k];
-					if (tmpMb.avg_gray > T_avg_gray)
-						break;
-					if (tmpMb.edgeType() == 2)
-					{
-						for (int l = 0; l <= k ; l++)
-							macros[i][j+l].mosaic = true;
-						break;
+	int mosaic_num = 0;
+	int dirty = 0;
+	int loop = 0;
+	do {
+		dirty = 0;
+		for (int i = 0; i < h16; i++){
+			for (int j = 0; j < w16; j++){
+				// 遍历每个宏块
+				// 如果宏块的边的二阶梯度值>mosaic_point_th
+				// 判断该边为"实边"
+				int n_edges = 0;
+				struct macroblock *pmb = &mb[i*w16+j];
+				if (pmb->bMosaic) 
+					continue;
+				
+				bool bEdge[4] = {0};
+				for (int k = 0; k < 4; k++){
+					bEdge[k] = (pmb->val[k] >= g_config.mosaic_point_th);
+					if (bEdge[k]){
+						n_edges ++;
 					}
+				}	
+				
+#ifdef WITHOUT_SDK
+				int top = i*16;
+				int left = j*16;
+				int ddy = mb[i*w16+j].val[TOP];
+				int ddx = mb[i*w16+j].val[LEFT];
+				cvLine(p2D, cvPoint(left, top), cvPoint(left+15, top), 
+						CV_RGB(0, ddy*10, 0), 1, CV_AA, 0);
+				cvLine(p2D, cvPoint(left, top), cvPoint(left, top+15), 
+						CV_RGB(0, ddx*10, 0), 1, CV_AA, 0);
+				cvSet2D(pMosaic, top, left, CV_RGB(255, 0, 0));
+#endif
+
+			
+				// 如果宏块的"实边"个数>mosaic_line_th
+				// 判断该宏块为"马赛克" 
+				if (n_edges >= g_config.mosaic_line_th){
+					mosaic_num ++;	
+					if (g_config.mosaic_adjacent_effect && n_edges < 4){
+						// 马赛克宏块的4条边都设置成实边,漫延到邻居的宏块
+						if (i > 0 && !bEdge[TOP]){
+							mb[(i-1)*w16+j].val[BOTTOM] = 255;
+							dirty = 1;
+						}
+						if (j > 0 && !bEdge[LEFT]){
+							mb[i*w16+j-1].val[RIGHT] = 255;
+							dirty = 1;
+						}
+						if (j < h16-1 && !bEdge[BOTTOM]){
+							mb[(i+1)*w16+j].val[TOP] = 255;
+							dirty = 1;
+						}
+						if (j < w16-1 && !bEdge[RIGHT]){
+							mb[i*w16+j+1].val[LEFT] = 255;
+							dirty = 1;
+						}
+					}
+#ifdef WITHOUT_SDK
+					cvRectangle(pMosaic, cvPoint(left, top), cvPoint(left+15, top+15), 
+							CV_RGB(255, 0, 0), 1, CV_AA, 0);
+#endif
 				}
 			}
-			else 
-			{
-				mb.mosaic = false;		
-			}
-
-
-			if (mb.mosaic){
-				if (mb.edge_size > T_edge_size)
-				{
-					mb.mosaic = false;
-					edge_size_filtered ++;
-				}/*else if (mb.avg_gray > T_avg_gray)
-				{
-					mb.mosaic = false;
-					avg_gray_filtered ++;
-				}
-				else if (mb.sdv_gray > T_sdv_gray){
-					mb.mosaic = false;
-					sdv_gray_filtered ++;
-				}*/
-			}
 		}
-	}
+		loop ++;
+	}while (g_config.mosaic_adjacent_effect && dirty);
+	LOG("Loop %d times", loop);
+	delete[] mb;
 
-	IplImage *pEdgePoints = cvCloneImage(pColor);
-	int mosaic_count = 0;
-	for (int i = 0; i < w; i++)
-	{
-		for (int j = 0; j < h; j++)
-		{	  
-			int top = j * BlockSize ;
-			int left = i * BlockSize ;
-			int bottom = j * BlockSize + BlockSize - 1;
-			int right = i * BlockSize + BlockSize - 1;
-			CvPoint pts[4];
-			pts[0].y = pts[1].y = top;
-			pts[1].x = pts[2].x = right;
-			pts[2].y = pts[3].y = bottom;
-			pts[3].x = pts[0].x = left;
-
-			if (macros[i][j].mosaic)
-			{
-				mosaic_count ++;
-				cvCircle(pColor, cvPoint(left+BlockSize/2, top+BlockSize/2), BlockSize/2, CV_RGB(0,255,0));
-			}
-
-			if (macros[i][j].magic()){
-				int green_level = 256 - macros[i][j].edge_size * 4;
-				cvFillConvexPoly(pEdgePoints, pts, 4, CV_RGB(0, green_level, 0));
-			}
-		}
-	}
-
-	cvShowImage("mosaic", pColor);
-	cvShowImage("edge" , pEdgePoints);
-
-	for (int i = 0; i < w; i++)
-	{
-		delete[] macros[i];
-	}
-	delete[] macros;
-	macros = NULL;
-
-	
-	if (mosaic_count){
-		LOG("mosaic_count = %d", mosaic_count);
-		save_image(pColor, "mosaic");
-	}
-	
-
-	/* release images */
-	cvReleaseImage(&pEdge);
-	cvReleaseImage(&pColor);
-	cvReleaseImage(&pEdgePoints);
-
-	return (mosaic_count >= T_mosaic_count);
+#ifdef WITHOUT_SDK
+	cvShowImage("mosaic", pMosaic);
+	cvShowImage("2-degree", p2D);
+	cvReleaseImage(&p2D);
+	cvReleaseImage(&pMosaic);
+#endif
+	LOG("mosaics=%d", mosaic_num);
+	// 如果"马赛克"的图像个数>mosaic_count_th, 判断该图像为马赛克图像
+	return (mosaic_num > g_config.mosaic_count_th);
 }
 
 

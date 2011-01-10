@@ -166,10 +166,12 @@ void* detect(void *para){
 		cur_frame = cvCloneImage(pFrame);
 
 		cvShowImage("video", cur_frame);
+		
+#ifdef WITHOUT_SDK
 		if (cvWaitKey(1000000) > 0){
 			//continue;
 		}
-
+#endif
 		// freezing
 		if (prev_frame && is_freezing(prev_frame, cur_frame)){
 			LOG("freezing @ Frame %d", nFrmNum);
@@ -196,9 +198,7 @@ void* detect(void *para){
 		time_t cur_time = time(NULL);
 
 		if (to_save){
-			
 			save_image(pFrame, "frame");
-			
 		}
 
 		// send msg every 5 seconds
@@ -217,7 +217,7 @@ void* detect(void *para){
 		RELEASE_FRAME(prev_frame);
 		
 		prev_frame = cur_frame;
-		usleep(10);
+		usleep(100);
 	}
 	return 0;
 }
